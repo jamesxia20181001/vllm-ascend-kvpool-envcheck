@@ -1,0 +1,9 @@
+#!/bin/sh
+# 假 uname：仅拦截 `uname -r`（检查器内核版本探测），其余参数回退真实 /usr/bin/uname。
+set -eu
+PROFILE_DIR="${STUB_DIR:-/opt/kvpool-stub}/profiles/${STUB_PROFILE:-a2}"
+if [ "$1" = "-r" ] 2>/dev/null; then
+    cat "$PROFILE_DIR/uname_r.txt"
+else
+    exec /usr/bin/uname "$@"
+fi

@@ -1,0 +1,20 @@
+# Docker 构建上下文排除：避免把无关产物装入 stub 镜像
+.git/
+__pycache__/
+*.py[cod]
+*$py.class
+results/
+*.result.json
+*.report.txt
+.*.result.json.tmp
+.*.report.txt.tmp
+
+# stub 档位数据为构建产物（Dockerfile 内由 gen_profiles.py 重新生成）
+stub/profiles/
+
+# 编辑器/IDE 噪音
+.idea/
+.vscode/
+*.swp
+*.swo
+*~

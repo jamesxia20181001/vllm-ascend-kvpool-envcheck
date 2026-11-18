@@ -1,0 +1,19 @@
+#!/bin/sh
+# 假 hccn_tool：读取 $STUB_DIR/profiles/$STUB_PROFILE 下的模拟输出。
+# 纯 PATH 拦截，无 monkeypatch。退出码恒 0。
+set -eu
+PROFILE_DIR="${STUB_DIR:-/opt/kvpool-stub}/profiles/${STUB_PROFILE:-a2}"
+
+# 解析 argv：hccn_tool -i <n> <-ip|-link|-net_health|-mtu|-stat|-ping> [-g] [address <ip> pkt <size>]
+npu=""
+field=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -i) shift; npu="${1:-}" ;;
+        -ip|-link|-net_health|-mtu|-stat) field="${1#-}" ;;
+        -ping) field="ping" ;;
+    esac
+    shift
+done
+
+cat "$PROFILE_DIR/hccn_tool_${npu}_${field}.txt"

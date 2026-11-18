@@ -1,0 +1,26 @@
+# Python 字节码与缓存
+__pycache__/
+*.py[cod]
+*$py.class
+
+# 检查器一次性输出产物（--output-dir，默认 ./results）
+results/
+*.result.json
+*.report.txt
+# write_output_bundle 原子写入期间的临时文件
+.*.result.json.tmp
+.*.report.txt.tmp
+
+# stub 档位数据（构建时由 stub/gen_profiles.py 生成，不入库）
+stub/profiles/
+
+# 操作系统噪音
+.DS_Store
+Thumbs.db
+
+# 编辑器/IDE
+*.swp
+*.swo
+*~
+.idea/
+.vscode/

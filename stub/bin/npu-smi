@@ -1,0 +1,33 @@
+#!/bin/sh
+# 假 npu-smi：读取 $STUB_DIR/profiles/$STUB_PROFILE 下的模拟输出。
+# 纯 PATH 拦截，无 monkeypatch。退出码恒 0，与真实 npu-smi 成功路径一致。
+set -eu
+PROFILE_DIR="${STUB_DIR:-/opt/kvpool-stub}/profiles/${STUB_PROFILE:-a2}"
+
+# 解析 argv：npu-smi info [-t <hccs|topo>] [-i <n>] [-c <c>]
+mode="info"
+t_type=""
+npu=""
+chip=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        info) mode="info" ;;
+        -t) shift; t_type="${1:-}" ;;
+        -i) shift; npu="${1:-}" ;;
+        -c) shift; chip="${1:-}" ;;
+    esac
+    shift
+done
+
+if [ "$mode" = "info" ] && [ -z "$t_type" ]; then
+    cat "$PROFILE_DIR/npu_smi_info.txt"
+elif [ "$mode" = "info" ] && [ "$t_type" = "hccs" ]; then
+    cat "$PROFILE_DIR/npu_smi_hccs_${npu}_${chip}.txt"
+elif [ "$mode" = "info" ] && [ "$t_type" = "topo" ]; then
+    cat "$PROFILE_DIR/npu_smi_topo_${npu}_${chip}.txt"
+elif [ "$mode" = "info" ] && [ "$t_type" = "board" ]; then
+    # probe_hdk 调用 npu-smi info -t board -i <n>；吐出含 HDK/Driver 版本的行
+    cat "$PROFILE_DIR/board_info.txt"
+else
+    exit 0
+fi
