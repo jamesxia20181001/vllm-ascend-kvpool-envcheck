@@ -16,7 +16,7 @@ IMAGE="${IMAGE:-kvpool-envcheck-stub}"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ASSERT="$HERE/assert_result.py"
 
-CAPS="--cap-add SYS_ADMIN --security-opt apparmor=unconfined"
+CAPS="--cap-add SYS_ADMIN --security-opt apparmor=unconfined --security-opt seccomp=unconfined"
 
 # 场景：name | profile | expected_pass | expected_manual | expected_exit | checker args...
 scenes=(
