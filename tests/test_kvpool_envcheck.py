@@ -77,7 +77,10 @@ class KvpoolEnvcheckTests(unittest.TestCase):
             )
             self.assertEqual(result["status"], expected)
         for requirement in rule["parameters"]["requirements"]:
-            self.assertEqual(set(requirement), {"hardware", "backend", "minimum"})
+            self.assertLessEqual(set(requirement), {"hardware", "backend", "minimum", "page_size"})
+            self.assertIn("hardware", requirement)
+            self.assertIn("backend", requirement)
+            self.assertIn("minimum", requirement)
 
     def test_raw_version_is_preserved(self):
         result = MODULE.evaluate_hdk_requirement(
@@ -579,11 +582,12 @@ recv seq=2,time=0.102000ms
             {
                 "MEM-001", "CANN-001", "HDK-001", "KERNEL-001", "LINGQU-001",
                 "HCCS-001", "HCCS-002", "ROCE-001", "ROCE-002", "DOCKER-001",
-                "DEP-MOONCAKE-001", "DEP-MOONCAKE-002", "DEP-MEMCACHE-001",
-                "DEP-MEMCACHE-002", "DEP-MEMCACHE-SSD-001", "SSD-001",
+                "DEP-MOONCAKE-001", "DEP-MOONCAKE-002", "DEP-VLLM-ASCEND-001",
+                "DEP-MEMCACHE-001", "DEP-MEMCACHE-002", "DEP-MEMCACHE-SSD-001",
+                "SSD-001",
             },
         )
-        self.assertEqual(self.catalog["schema_version"], "7.1")
+        self.assertEqual(self.catalog["schema_version"], "7.2")
         self.assertEqual(set(self.rule("DOCKER-001")["parameters"]), {"required_all", "required_any"})
 
     def test_memory_evidence_is_compact(self):
@@ -755,7 +759,7 @@ recv seq=2,time=0.102000ms
         ]
         self.assertEqual(
             list(MODULE.build_probe_plan(rules)),
-            ["memory_scan", "hdk", "kernel", "manual_confirmation", "hccs_diagnostics", "docker_prereqs", "package_versions"],
+            ["memory_scan", "hdk", "kernel", "manual_confirmation", "hccs_diagnostics", "docker_prereqs", "package_versions", "page_size"],
         )
 
     def test_package_probe_uses_names_from_applicable_rules(self):
@@ -910,6 +914,145 @@ recv seq=2,time=0.102000ms
         self.assertIn("- fix: true", report)
         self.assertIn("修复结果: SUCCESS=0, NO_EFFECT=0, FAILED=0, SKIPPED=0, MANUAL=1", report)
         self.assertIn(f"- LINGQU-001 MANUAL: {action['message']}", report)
+
+
+    # --- 64K base-page conditional threshold tests ---
+
+    def test_page_size_probe_detects_64k(self):
+        with patch.object(MODULE, "run_cmd", return_value=(0, "65536", "")):
+            result = MODULE.probe_page_size()
+        self.assertEqual(result["bytes"], 65536)
+        self.assertEqual(result["label"], "64K")
+
+    def test_page_size_probe_detects_4k(self):
+        with patch.object(MODULE, "run_cmd", return_value=(0, "4096", "")):
+            result = MODULE.probe_page_size()
+        self.assertEqual(result["bytes"], 4096)
+        self.assertEqual(result["label"], "4K")
+
+    def test_hdk_64k_page_raises_minimum_for_memcache(self):
+        rule = self.rule("HDK-001")
+        source = {"source": "/driver/version.info", "rc": 0, "matched_line": "Version=26.0.rc2"}
+        for hardware in ("A2", "A3"):
+            probes = {
+                "hdk": {"hardware": hardware, "backend": "memcache", "version": "26.1.0", "version_source": source},
+                "page_size": {"bytes": 65536, "label": "64K", "rc": 0, "stderr": "", "stdout": "65536"},
+            }
+            result = MODULE.evaluate_hdk_requirement(rule, probes)
+            self.assertEqual(result["status"], "PASS", hardware)
+            self.assertEqual(result["evidence"]["page_size"], "64K")
+            self.assertEqual(result["evidence"]["minimum_version"], "26.1.0")
+            self.assertIn("64K", result["detail"])
+
+    def test_hdk_64k_page_blocks_below_26_1_for_memcache(self):
+        rule = self.rule("HDK-001")
+        source = {"source": "/driver/version.info", "rc": 0, "matched_line": "Version=25.5.0"}
+        probes = {
+            "hdk": {"hardware": "A3", "backend": "memcache", "version": "25.5.0", "version_source": source},
+            "page_size": {"bytes": 65536, "label": "64K", "rc": 0, "stderr": "", "stdout": "65536"},
+        }
+        result = MODULE.evaluate_hdk_requirement(rule, probes)
+        self.assertEqual(result["status"], "BLOCK")
+        self.assertEqual(result["evidence"]["minimum_version"], "26.1.0")
+
+    def test_hdk_64k_page_does_not_raise_minimum_for_mooncake(self):
+        rule = self.rule("HDK-001")
+        source = {"source": "/driver/version.info", "rc": 0, "matched_line": "Version=25.5.0"}
+        probes = {
+            "hdk": {"hardware": "A3", "backend": "mooncake", "version": "25.5.0", "version_source": source},
+            "page_size": {"bytes": 65536, "label": "64K", "rc": 0, "stderr": "", "stdout": "65536"},
+        }
+        result = MODULE.evaluate_hdk_requirement(rule, probes)
+        self.assertEqual(result["status"], "PASS")
+        self.assertEqual(result["evidence"]["minimum_version"], "25.5.0")
+
+    def test_hdk_4k_page_keeps_legacy_minimum(self):
+        rule = self.rule("HDK-001")
+        source = {"source": "/driver/version.info", "rc": 0, "matched_line": "Version=25.5.0"}
+        probes = {
+            "hdk": {"hardware": "A3", "backend": "memcache", "version": "25.5.0", "version_source": source},
+            "page_size": {"bytes": 4096, "label": "4K", "rc": 0, "stderr": "", "stdout": "4096"},
+        }
+        result = MODULE.evaluate_hdk_requirement(rule, probes)
+        self.assertEqual(result["status"], "PASS")
+        self.assertEqual(result["evidence"]["minimum_version"], "25.5.0")
+
+    def test_memcache_package_64k_requires_131(self):
+        rule = self.rule("DEP-MEMCACHE-001")
+        probes = {
+            "package_versions": {"versions": {"memfabric-hybrid": "1.3.0"}},
+            "page_size": {"bytes": 65536, "label": "64K", "rc": 0, "stderr": "", "stdout": "65536"},
+        }
+        result = MODULE.evaluate_package_version(rule, probes)
+        self.assertEqual(result["status"], "BLOCK")
+        self.assertIn("1.3.1", result["detail"])
+
+    def test_memcache_package_64k_passes_at_131(self):
+        rule = self.rule("DEP-MEMCACHE-001")
+        probes = {
+            "package_versions": {"versions": {"memfabric-hybrid": "1.3.1"}},
+            "page_size": {"bytes": 65536, "label": "64K", "rc": 0, "stderr": "", "stdout": "65536"},
+        }
+        result = MODULE.evaluate_package_version(rule, probes)
+        self.assertEqual(result["status"], "PASS")
+        self.assertIn("64K", result["detail"])
+
+    def test_memcache_package_4k_only_requires_installed(self):
+        rule = self.rule("DEP-MEMCACHE-001")
+        probes = {
+            "package_versions": {"versions": {"memfabric-hybrid": "1.0.0"}},
+            "page_size": {"bytes": 4096, "label": "4K", "rc": 0, "stderr": "", "stdout": "4096"},
+        }
+        result = MODULE.evaluate_package_version(rule, probes)
+        self.assertEqual(result["status"], "PASS")
+
+    def test_vllm_ascend_version_threshold(self):
+        rule = self.rule("DEP-VLLM-ASCEND-001")
+        probes_block = {"package_versions": {"versions": {"vllm-ascend": "0.29.0"}}, "page_size": {"label": "4K"}}
+        result = MODULE.evaluate_package_version(rule, probes_block)
+        self.assertEqual(result["status"], "BLOCK")
+        probes_pass = {"package_versions": {"versions": {"vllm-ascend": "0.30.0"}}, "page_size": {"label": "4K"}}
+        result = MODULE.evaluate_package_version(rule, probes_pass)
+        self.assertEqual(result["status"], "PASS")
+
+    def test_vllm_ascend_rule_scope_is_memcache_only(self):
+        rule = self.rule("DEP-VLLM-ASCEND-001")
+        self.assertTrue(MODULE.applies(rule, "A3", "memcache", "roce", "multi-node"))
+        self.assertTrue(MODULE.applies(rule, "A2", "memcache", "roce", "single-node"))
+        self.assertFalse(MODULE.applies(rule, "A3", "mooncake", "roce", "multi-node"))
+
+    def test_kernel_not_applicable_on_64k_page(self):
+        rule = self.rule("KERNEL-001")
+        result = MODULE.evaluate_kernel_requirement(
+            rule,
+            {
+                "kernel": {"deployment_mode": "multi-node", "value": "4.19.90", "rc": 0, "stderr": ""},
+                "page_size": {"bytes": 65536, "label": "64K", "rc": 0, "stderr": "", "stdout": "65536"},
+            },
+        )
+        self.assertEqual(result["status"], "NOT_APPLICABLE")
+        self.assertFalse(result["blocking"])
+        self.assertIn("64K", result["detail"])
+
+    def test_kernel_still_blocks_4k_page_old_version_multi_node(self):
+        rule = self.rule("KERNEL-001")
+        result = MODULE.evaluate_kernel_requirement(
+            rule,
+            {
+                "kernel": {"deployment_mode": "multi-node", "value": "4.19.90", "rc": 0, "stderr": ""},
+                "page_size": {"bytes": 4096, "label": "4K", "rc": 0, "stderr": "", "stdout": "4096"},
+            },
+        )
+        self.assertEqual(result["status"], "BLOCK")
+        self.assertTrue(result["blocking"])
+
+    def test_probe_plan_includes_page_size(self):
+        context = MODULE.CheckContext("A3", "memcache", 32768, link_type="hccs")
+        rules = [
+            rule for rule in self.catalog["rules"]
+            if MODULE.applies(rule, context.hardware, context.backend, context.link_type, context.deployment_mode) and MODULE.feature_applies(rule, context.ssd_offload)
+        ]
+        self.assertIn("page_size", MODULE.build_probe_plan(rules))
 
 
 if __name__ == "__main__":

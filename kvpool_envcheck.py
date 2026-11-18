@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Offline vLLM-Ascend kvpool pre-deployment checker, catalog schema 7.1."""
+"""Offline vLLM-Ascend kvpool pre-deployment checker, catalog schema 7.2."""
 
 from __future__ import annotations
 
@@ -26,7 +26,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 ROOT = Path(__file__).resolve().parent
 DEFAULT_CATALOG = ROOT / "rules.json"
-TOOL_VERSION = "14.1.2"
+TOOL_VERSION = "14.2.0"
 RESULT_SCHEMA_VERSION = "13.1"
 REFERENCE_DOCUMENTS = [
     {
@@ -945,6 +945,27 @@ def probe_hdk() -> Dict[str, Any]:
     return {"version": found, "version_source": found_source, "cann_version": cann_found, "cann_source": cann_source}
 
 
+PAGE_SIZE_LABELS = {"4K": 4096, "64K": 65536}
+
+
+def probe_page_size() -> Dict[str, Any]:
+    """读取容器所见的运行时主机基页大小，归一化为 4K/64K 等标签。"""
+    rc, out, err = run_cmd(["getconf", "PAGESIZE"], timeout=10)
+    bytes_value = None
+    if rc == 0 and out:
+        try:
+            bytes_value = int(out.strip())
+        except ValueError:
+            bytes_value = None
+    if bytes_value is None:
+        try:
+            bytes_value = os.sysconf("SC_PAGE_SIZE")
+        except (ValueError, OSError):
+            bytes_value = None
+    label = next((name for name, value in PAGE_SIZE_LABELS.items() if value == bytes_value), None)
+    return {"bytes": bytes_value, "label": label, "rc": rc, "stderr": err, "stdout": out}
+
+
 def probe_kernel() -> Dict[str, Any]:
     """读取容器所见的 Linux kernel 版本。"""
     rc, out, err = run_cmd(["uname", "-r"])
@@ -1064,6 +1085,7 @@ def evaluator_parameters(rules: List[Dict[str, Any]], evaluator: str) -> Dict[st
 
 PROBES: Dict[str, Callable[[CheckContext, List[Dict[str, Any]]], Dict[str, Any]]] = {
     "hdk": lambda context, rules: {**probe_hdk(), "hardware": context.hardware, "backend": context.backend},
+    "page_size": lambda context, rules: probe_page_size(),
     "kernel": lambda context, rules: {**probe_kernel(), "deployment_mode": context.deployment_mode},
     "memory_scan": lambda context, rules: probe_memory_capacity(context.hardware, context.managed_memory_mb),
     "manual_confirmation": lambda context, rules: {},
@@ -1091,8 +1113,8 @@ PROBES: Dict[str, Callable[[CheckContext, List[Dict[str, Any]]], Dict[str, Any]]
 def validate_catalog(catalog: Dict[str, Any]) -> None:
     """校验规则目录结构、适用范围和 evaluator 所需运行参数。"""
     # 目录基础字段和全局支持范围
-    if catalog.get("schema_version") != "7.1":
-        raise CatalogError("仅支持 rules.json schema_version=7.1")
+    if catalog.get("schema_version") != "7.2":
+        raise CatalogError("仅支持 rules.json schema_version=7.2")
     for field in ("supported_hardware", "supported_backends", "supported_link_types", "supported_deployment_modes", "rules"):
         if not isinstance(catalog.get(field), list) or not catalog[field]:
             raise CatalogError(f"{field} 必须是非空数组")
@@ -1194,18 +1216,29 @@ def validate_catalog(catalog: Dict[str, Any]) -> None:
             for requirement in requirements:
                 if not isinstance(requirement, dict) or not all(requirement.get(key) for key in ("hardware", "backend", "minimum")):
                     raise CatalogError(f"规则 {rule['id']} 的 HDK 要求必须包含 hardware/backend/minimum")
-                combination = (requirement["hardware"], requirement["backend"])
+                page_size = requirement.get("page_size")
+                if page_size is not None and page_size not in PAGE_SIZE_LABELS:
+                    raise CatalogError(f"规则 {rule['id']} 的 HDK 要求 page_size 必须为 {','.join(PAGE_SIZE_LABELS)} 之一")
+                combination = (requirement["hardware"], requirement["backend"], page_size)
                 if combination in combinations:
-                    raise CatalogError(f"规则 {rule['id']} 的 HDK 组合重复: {combination[0]}/{combination[1]}")
+                    raise CatalogError(f"规则 {rule['id']} 的 HDK 组合重复: {combination[0]}/{combination[1]}/{combination[2]}")
                 combinations.append(combination)
                 if requirement["hardware"] not in rule["hardware"] or requirement["backend"] not in rule["backends"]:
-                    raise CatalogError(f"规则 {rule['id']} 的 HDK 组合超出适用范围: {combination[0]}/{combination[1]}")
+                    raise CatalogError(f"规则 {rule['id']} 的 HDK 组合超出适用范围: {requirement['hardware']}/{requirement['backend']}")
                 minimum = version_tuple(str(requirement["minimum"]))
                 if minimum is None:
-                    raise CatalogError(f"规则 {rule['id']} 的 HDK 版本门限无效: {combination[0]}/{combination[1]}")
+                    raise CatalogError(f"规则 {rule['id']} 的 HDK 版本门限无效: {requirement['hardware']}/{requirement['backend']}/{page_size}")
             expected = {(hardware, backend) for hardware in rule["hardware"] for backend in rule["backends"]}
-            if set(combinations) != expected:
+            covered = {(hardware, backend) for hardware, backend, _ in combinations}
+            if covered != expected:
                 raise CatalogError(f"规则 {rule['id']} 的 HDK 要求未完整覆盖适用组合")
+            for hardware, backend in expected:
+                page_sizes = [page_size for hardware_, backend_, page_size in combinations if hardware_ == hardware and backend_ == backend]
+                if None not in page_sizes:
+                    raise CatalogError(f"规则 {rule['id']} 的 HDK 组合 {hardware}/{backend} 缺少默认（无 page_size）要求")
+                duplicates = [page_size for page_size in page_sizes if page_size is not None]
+                if len(set(duplicates)) != len(duplicates):
+                    raise CatalogError(f"规则 {rule['id']} 的 HDK 组合 {hardware}/{backend} 存在重复 page_size 要求")
         if rule["evaluator"] == "docker_prereqs":
             parameters = rule["parameters"]
             if set(parameters) != {"required_all", "required_any"}:
@@ -1236,6 +1269,20 @@ def validate_catalog(catalog: Dict[str, Any]) -> None:
                 raise CatalogError(f"规则 {rule['id']} 的 parameters.timeout_seconds 必须是正整数")
             if not isinstance(packet_loss, (int, float)) or isinstance(packet_loss, bool) or packet_loss < 0:
                 raise CatalogError(f"规则 {rule['id']} 的 parameters.required_packet_loss_percent 必须是非负数")
+        if rule["evaluator"] == "package_version":
+            page_thresholds = rule["parameters"].get("page_size_thresholds")
+            if page_thresholds is not None:
+                if not isinstance(page_thresholds, list) or not page_thresholds:
+                    raise CatalogError(f"规则 {rule['id']} 的 parameters.page_size_thresholds 必须是非空数组")
+                seen_pages = []
+                for item in page_thresholds:
+                    if not isinstance(item, dict) or not all(item.get(key) for key in ("page_size", "threshold")):
+                        raise CatalogError(f"规则 {rule['id']} 的 page_size_thresholds 必须包含 page_size/threshold")
+                    if item["page_size"] not in PAGE_SIZE_LABELS:
+                        raise CatalogError(f"规则 {rule['id']} 的 page_size_thresholds.page_size 必须为 {','.join(PAGE_SIZE_LABELS)} 之一")
+                    if item["page_size"] in seen_pages:
+                        raise CatalogError(f"规则 {rule['id']} 的 page_size_thresholds 存在重复 page_size: {item['page_size']}")
+                    seen_pages.append(item["page_size"])
     # probe 与 evaluator 的配对关系
     for probe_name, required_evaluators in {
         "roce_diagnostics": {"roce_link", "roce_local"},
@@ -1360,16 +1407,23 @@ def evaluate_version(rule: Dict[str, Any], probes: Dict[str, Any]) -> Optional[D
 
 
 def evaluate_kernel_requirement(rule: Dict[str, Any], probes: Dict[str, Any]) -> Dict[str, Any]:
-    """按部署模式和版本门限判定 Linux kernel 依赖。"""
+    """按部署模式、基页大小和版本门限判定 Linux kernel 依赖。"""
     probe = probes[rule["probe"]]
     deployment_mode = probe.get("deployment_mode")
     required_deployment_modes = rule.get("deployment_modes", [])
-    evidence = {**probe, "deployment_mode": deployment_mode, "required_deployment_modes": required_deployment_modes}
+    page_size_label = probes.get("page_size", {}).get("label")
+    evidence = {**probe, "deployment_mode": deployment_mode, "required_deployment_modes": required_deployment_modes, "page_size": page_size_label}
     if deployment_mode not in required_deployment_modes:
         result = make_record(rule, "NOT_APPLICABLE", evidence, "当前为单节点部署，KERNEL-001不影响单节点kvpool")
         result["blocking"] = False
         result["remediation"] = dict(rule["remediation"])
         result["remediation"]["description"] = "单节点部署无需处理该场景。"
+        return result
+    if page_size_label == "64K":
+        result = make_record(rule, "NOT_APPLICABLE", evidence, "当前为64K基页部署，KERNEL-001的kernel>=6.6.0门限不适用于64K基页路径")
+        result["blocking"] = False
+        result["remediation"] = dict(rule["remediation"])
+        result["remediation"]["description"] = "64K基页路径经验证不依赖kernel>=6.6.0，无需处理该场景。"
         return result
     value_text = str(probe.get("value") or "")
     value = version_tuple(value_text)
@@ -1378,7 +1432,7 @@ def evaluate_kernel_requirement(rule: Dict[str, Any], probes: Dict[str, Any]) ->
     if value is None:
         return make_record(rule, rule["parameters"].get("unknown_status", "BLOCK"), evidence, f"多节点部署无法确认Linux kernel版本；要求>={threshold_text}。未知证据不能判定为通过")
     status = "PASS" if compare_version(value, version_tuple(threshold_text) or (0,)) >= 0 else "BLOCK"
-    detail = f"部署模式={deployment_mode}；检测到Linux kernel={value_text}，要求>={threshold_text}"
+    detail = f"部署模式={deployment_mode}；基页={page_size_label or '-'}；检测到Linux kernel={value_text}，要求>={threshold_text}"
     result = make_record(rule, status, evidence, detail)
     if status == "BLOCK":
         result["remediation"]["description"] = f"多节点部署将host Linux kernel升级到>={threshold_text}，重启或重建容器后复测。"
@@ -1386,19 +1440,27 @@ def evaluate_kernel_requirement(rule: Dict[str, Any], probes: Dict[str, Any]) ->
 
 
 def evaluate_hdk_requirement(rule: Dict[str, Any], probes: Dict[str, Any]) -> Dict[str, Any]:
-    """按 hardware/backend 矩阵判定 HDK 最低版本。"""
+    """按 hardware/backend/page_size 矩阵判定 HDK 最低版本。"""
     probe = probes[rule["probe"]]
     hardware = probe.get("hardware")
     backend = probe.get("backend")
-    requirement = next(
+    page_size_label = probes.get("page_size", {}).get("label")
+    requirements = rule["parameters"]["requirements"]
+    matches = [
+        item for item in requirements
+        if item["hardware"] == hardware and item["backend"] == backend
+        and item.get("page_size") == page_size_label
+    ]
+    requirement = matches[0] if matches else next(
         (
-            item for item in rule["parameters"]["requirements"]
+            item for item in requirements
             if item["hardware"] == hardware and item["backend"] == backend
+            and item.get("page_size") is None
         ),
         None,
     )
     if requirement is None:
-        evidence = {"hardware": hardware, "backend": backend, "requirement": None}
+        evidence = {"hardware": hardware, "backend": backend, "page_size": page_size_label, "requirement": None}
         return make_record(rule, "BLOCK", evidence, "当前 hardware/backend 没有对应的 HDK 版本要求，不能判定为通过")
 
     raw_version = str(probe.get("version") or "")
@@ -1409,20 +1471,22 @@ def evaluate_hdk_requirement(rule: Dict[str, Any], probes: Dict[str, Any]) -> Di
         **build_version_evidence(rule, probe, raw_version or None),
         "hardware": hardware,
         "backend": backend,
+        "page_size": page_size_label,
         "minimum_version": minimum_text,
     }
+    page_note = f"（{page_size_label} 基页门限）" if requirement.get("page_size") else ""
     if current is None:
         return make_record(
             rule,
             rule["parameters"].get("unknown_status", "BLOCK"),
             evidence,
-            f"无法确认 HDK 版本；当前组合要求>={minimum_text}。未知证据不能判定为通过",
+            f"无法确认 HDK 版本；当前组合要求>={minimum_text}{page_note}。未知证据不能判定为通过",
         )
 
     status = "PASS" if compare_version(current, minimum) >= 0 else "BLOCK"
     normalized = version_text(raw_version)
     detected = raw_version + (f"（比较值={normalized}）" if raw_version != normalized else "")
-    detail = f"检测到 HDK={detected}，当前 {hardware}/{backend} 要求>={minimum_text}"
+    detail = f"检测到 HDK={detected}，当前 {hardware}/{backend} 要求>={minimum_text}{page_note}"
     result = make_record(rule, status, evidence, detail)
     if status == "BLOCK":
         result["remediation"]["description"] = (
@@ -1511,11 +1575,19 @@ def evaluate_manual_confirmation(rule: Dict[str, Any], probes: Dict[str, Any]) -
 
 
 def evaluate_package_version(rule: Dict[str, Any], probes: Dict[str, Any]) -> Dict[str, Any]:
-    """判定规则要求的软件包是否安装且版本满足门限。"""
+    """判定规则要求的软件包是否安装且版本满足门限（可按基页大小叠加条件门限）。"""
     name = rule["parameters"]["package"]
     version = probes["package_versions"]["versions"].get(name)
     threshold = rule["parameters"].get("threshold")
-    evidence = {"package": name, "installed_version": version, "required_version": threshold}
+    page_size_label = probes.get("page_size", {}).get("label")
+    page_note = ""
+    page_thresholds = rule["parameters"].get("page_size_thresholds")
+    if page_thresholds and page_size_label:
+        conditional = next((item for item in page_thresholds if item["page_size"] == page_size_label), None)
+        if conditional:
+            threshold = conditional["threshold"]
+            page_note = f"（{page_size_label} 基页门限）"
+    evidence = {"package": name, "installed_version": version, "required_version": threshold, "page_size": page_size_label}
     if not version:
         return make_record(rule, "BLOCK", evidence, f"未安装 {name}")
     if not threshold:
@@ -1525,7 +1597,7 @@ def evaluate_package_version(rule: Dict[str, Any], probes: Dict[str, Any]) -> Di
     if current_key is None or threshold_key is None:
         return make_record(rule, "BLOCK", evidence, f"{name} 版本无法解析：{version}")
     status = "BLOCK" if current_key < threshold_key else "PASS"
-    return make_record(rule, status, evidence, f"检测到 {name}={version}，要求>={threshold}")
+    return make_record(rule, status, evidence, f"检测到 {name}={version}，要求>={threshold}{page_note}")
 
 
 def evaluate_ssd_storage(rule: Dict[str, Any], probes: Dict[str, Any]) -> Dict[str, Any]:
@@ -1677,12 +1749,21 @@ def build_probe_plan(rules: List[Dict[str, Any]]) -> Dict[str, List[Dict[str, An
     for rule in rules:
         if rule["scope"] == "docker":
             plan.setdefault(rule["probe"], []).append(rule)
+    docker_rules = [rule for rule in rules if rule["scope"] == "docker"]
+    needs_page_size = any(
+        rule["evaluator"] in ("hdk_requirement", "kernel_requirement")
+        or (rule["evaluator"] == "package_version" and rule["parameters"].get("page_size_thresholds"))
+        for rule in docker_rules
+    )
+    if needs_page_size:
+        plan["page_size"] = []
     return plan
 
 
 PROBE_LABELS = {
     "memory_scan": "纳管内存检查",
     "hdk": "版本检查",
+    "page_size": "主机基页大小检查",
     "kernel": "Linux kernel 版本检查",
     "manual_confirmation": "人工确认准备",
     "hccs_diagnostics": "A3 节点内互联检查",
