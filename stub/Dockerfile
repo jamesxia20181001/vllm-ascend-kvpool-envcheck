@@ -19,8 +19,8 @@ ENV STUB_DIR=/opt/kvpool-stub \
 RUN python3 /workspace/stub/gen_profiles.py \
     && mkdir -p "${STUB_DIR}/bin" "${STUB_DIR}/profiles" \
     && cp -a /workspace/stub/profiles/. "${STUB_DIR}/profiles/" \
-    && cp /workspace/stub/bin/npu-smi /workspace/stub/bin/hccn_tool /workspace/stub/bin/uname "${STUB_DIR}/bin/" \
-    && chmod +x "${STUB_DIR}/bin/npu-smi" "${STUB_DIR}/bin/hccn_tool" "${STUB_DIR}/bin/uname" \
+    && cp /workspace/stub/bin/npu-smi /workspace/stub/bin/hccn_tool /workspace/stub/bin/uname /workspace/stub/bin/getconf "${STUB_DIR}/bin/" \
+    && chmod +x "${STUB_DIR}/bin/npu-smi" "${STUB_DIR}/bin/hccn_tool" "${STUB_DIR}/bin/uname" "${STUB_DIR}/bin/getconf" \
     && cp -a /workspace/stub/fake_modules "${STUB_DIR}/fake_modules" \
     && chmod +x /workspace/stub/entrypoint.sh
 

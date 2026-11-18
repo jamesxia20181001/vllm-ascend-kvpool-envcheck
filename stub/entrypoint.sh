@@ -60,7 +60,8 @@ cd "$WORKDIR"
 # 6) artifacts 脚本"提供依赖"机制（不修改 artifacts 源文件，原脚本真实运行）：
 #    A3 场景：mem_scan.py 走 /proc/kpageflags + sysfs NUMA；hccs_test_a3.py 走假 torch
 #    A2 不触发这两条路径（A2 用 /proc/meminfo 大页、无 HCCS 动态）
-if [ "$PROFILE" = "a3" ] && [ -d "$WORKDIR/artifacts" ]; then
+if [ "$PROFILE" = "a3" ] || [ "$PROFILE" = "a3-64k" ]; then IS_A3=1; else IS_A3=0; fi
+if [ "$IS_A3" = "1" ] && [ -d "$WORKDIR/artifacts" ]; then
     MS_SYSFS="$PROFILE_DIR/memscan_sysfs"
     if [ -d "$MS_SYSFS" ]; then
         # bind-mount 伪造 sysfs NUMA 拓扑（覆盖视图，不写源文件）

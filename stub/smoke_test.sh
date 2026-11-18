@@ -1,8 +1,9 @@
 #!/bin/bash
 # stub/smoke_test.sh — 构建 stub 镜像并端到端验证检查器的预期判定计数。
 #
-# 把 stub/README.md 中声称的 "A2 8 PASS / A3 单节点 8 PASS / A3 多节点 9 PASS+1 MANUAL"
-# 固化为机器断言：任一计数偏离即失败。
+# 把 stub/README.md 中声称的 PASS/MANUAL 计数固化为机器断言：任一计数偏离即失败。
+# 4K 档位：A2 9 PASS / A3 单节点 9 PASS / A3 多节点 10 PASS+1 MANUAL
+# 64K 档位：A2-64K 9 PASS / A3-64K 单节点 9 PASS / A3-64K 多节点 9 PASS+1 MANUAL（KERNEL 豁免）
 #
 # 用法：
 #   bash stub/smoke_test.sh                # 构建（若镜像缺失）并跑全部场景
@@ -19,9 +20,12 @@ CAPS="--cap-add SYS_ADMIN --security-opt apparmor=unconfined"
 
 # 场景：name | profile | expected_pass | expected_manual | expected_exit | checker args...
 scenes=(
-  "a2-single-roce|a2|8|0|0|--hardware A2 --backend memcache --managed-memory-mb 32768 --deployment-mode single-node --link-type roce"
-  "a3-single-hccs|a3|8|0|0|--hardware A3 --backend memcache --managed-memory-mb 32768 --deployment-mode single-node --link-type hccs"
-  "a3-multi-hccs|a3|9|1|20|--hardware A3 --backend memcache --managed-memory-mb 32768 --deployment-mode multi-node --link-type hccs"
+  "a2-single-roce|a2|9|0|0|--hardware A2 --backend memcache --managed-memory-mb 32768 --deployment-mode single-node --link-type roce"
+  "a3-single-hccs|a3|9|0|0|--hardware A3 --backend memcache --managed-memory-mb 32768 --deployment-mode single-node --link-type hccs"
+  "a3-multi-hccs|a3|10|1|20|--hardware A3 --backend memcache --managed-memory-mb 32768 --deployment-mode multi-node --link-type hccs"
+  "a2-64k-single-roce|a2-64k|9|0|0|--hardware A2 --backend memcache --managed-memory-mb 32768 --deployment-mode single-node --link-type roce"
+  "a3-64k-single-hccs|a3-64k|9|0|0|--hardware A3 --backend memcache --managed-memory-mb 32768 --deployment-mode single-node --link-type hccs"
+  "a3-64k-multi-hccs|a3-64k|9|1|20|--hardware A3 --backend memcache --managed-memory-mb 32768 --deployment-mode multi-node --link-type hccs"
 )
 
 command -v docker >/dev/null 2>&1 || { echo "错误：未找到 docker"; exit 2; }

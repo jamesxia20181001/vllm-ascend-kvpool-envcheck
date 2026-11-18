@@ -166,7 +166,7 @@ def hccn_tool_ping() -> str:
 
 
 def write_profile(profile_dir: Path, npus, roce, chips_per_npu: int, kernel: str,
-                  packages: dict) -> None:
+                  packages: dict, page_size: int = 4096, hdk_version: str = "25.5.0") -> None:
     p = profile_dir
     p.mkdir(parents=True, exist_ok=True)
     total_dies = len(npus) * chips_per_npu
@@ -179,11 +179,12 @@ def write_profile(profile_dir: Path, npus, roce, chips_per_npu: int, kernel: str
         "Hugepagesize:       2048 kB\n",
         encoding="ascii",
     )
+    (p / "pagesize.txt").write_text(f"{page_size}\n", encoding="ascii")
     (p / "uname_r.txt").write_text(kernel + "\n", encoding="utf-8")
     (p / "driver_version.info").write_text(
-        "HDK Version : 25.5.0\nDriver Version : 25.5.0\n", encoding="utf-8")
+        f"HDK Version : {hdk_version}\nDriver Version : {hdk_version}\n", encoding="utf-8")
     (p / "board_info.txt").write_text(
-        "HDK Version : 25.5.0\nDriver Version : 25.5.0\n", encoding="utf-8")
+        f"HDK Version : {hdk_version}\nDriver Version : {hdk_version}\n", encoding="utf-8")
     (p / "ascend_toolkit_install.info").write_text(
         "CANN Toolkit version : 9.1.0\n", encoding="utf-8")
     (p / "hccn.conf").write_text("hccn_mode=0\n", encoding="utf-8")
@@ -213,15 +214,25 @@ def write_profile(profile_dir: Path, npus, roce, chips_per_npu: int, kernel: str
 
 
 def main() -> None:
-    a2_pkgs = {"memfabric-hybrid": "1.0.0", "memcache-hybrid": "1.0.0"}
-    a3_pkgs = {"memfabric-hybrid": "1.0.0", "memcache-hybrid": "1.0.0"}
+    a2_pkgs = {"memfabric-hybrid": "1.0.0", "memcache-hybrid": "1.0.0", "vllm-ascend": "0.30.0"}
+    a3_pkgs = {"memfabric-hybrid": "1.0.0", "memcache-hybrid": "1.0.0", "vllm-ascend": "0.30.0"}
     write_profile(ROOT / "profiles" / "a2", A2_NPUS, A2_ROCE, 1,
                   "4.19.90-2112.6.0.20.ky10.aarch64", a2_pkgs)
     write_profile(ROOT / "profiles" / "a3", A3_NPUS, A3_ROCE, 2,
                   "6.6.0-77.0.0.35.an23.aarch64", a3_pkgs)
+    # 64K 基页档位：HDK>=26.1.0、memcache/memfabric>=1.3.1、4.19 内核（Kylin V10）
+    a2_64k_pkgs = {"memfabric-hybrid": "1.3.1", "memcache-hybrid": "1.3.1", "vllm-ascend": "0.30.0"}
+    a3_64k_pkgs = {"memfabric-hybrid": "1.3.1", "memcache-hybrid": "1.3.1", "vllm-ascend": "0.30.0"}
+    write_profile(ROOT / "profiles" / "a2-64k", A2_NPUS, A2_ROCE, 1,
+                  "4.19.90-2112.6.0.20.ky10.aarch64", a2_64k_pkgs,
+                  page_size=65536, hdk_version="26.1.0")
+    write_profile(ROOT / "profiles" / "a3-64k", A3_NPUS, A3_ROCE, 2,
+                  "4.19.90-2112.6.0.20.ky10.aarch64", a3_64k_pkgs,
+                  page_size=65536, hdk_version="26.1.0")
     # A3 走 mem_scan.py 路径，需伪造其依赖的 sysfs NUMA 拓扑（页大小无关）。
     # /proc/kpageflags 由 stub/gen_kpageflags.py 在容器运行时按实际页大小生成。
     gen_memscan_sysfs(ROOT / "profiles" / "a3")
+    gen_memscan_sysfs(ROOT / "profiles" / "a3-64k")
     print("generated profiles under", ROOT / "profiles")
 
 
