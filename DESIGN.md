@@ -1,7 +1,7 @@
 # vLLM-Ascend kvpool 环境检测工具设计
 
-版本：v14.1.2
-规则事实源：`rules.json`（schema `7.1`）  
+版本：v14.2.0
+规则事实源：`rules.json`（schema `7.2`）  
 结果协议：`13.1`
 
 本文只描述当前实现的边界、判定原则、输出协议和维护方法。规则具体内容以 `rules.json` 为准，避免文档与代码各维护一份规则。
@@ -34,8 +34,10 @@
 ### 版本与公共依赖
 
 - CANN 统一要求 `>=9.1.0`。
-- HDK-001 按硬件/后端矩阵判定：A2、A3 的 memcache/mooncake 后端最低 HDK 均为 25.5；Mooncake 软件依赖由独立场景判定。
-- KERNEL-001 只针对 A3 + memcache 多节点；单节点返回 `NOT_APPLICABLE`，不阻塞单节点部署。
+- HDK-001 按硬件/后端/基页大小三维矩阵判定：默认（4K 基页）A2、A3 的 memcache/mooncake 后端最低 HDK 均为 25.5.0；当 `getconf PAGESIZE` 返回 64K 时，memcache 后端最低 HDK 提升至 26.1.0（25.5.0 引入 64K 页缺陷，25.5.6 修复，验证结论要求直接升级至 26.1.x）；mooncake 后端不叠加 64K 门限。
+- KERNEL-001 只针对 A3 + memcache 多节点；单节点返回 `NOT_APPLICABLE`。64K 基页路径经验证不依赖 kernel>=6.6.0，故 64K 基页多节点也返回 `NOT_APPLICABLE`，不阻塞部署。
+- DEP-VLLM-ASCEND-001 要求 vllm-ascend `>=0.30.0`（memcache 后端，无条件）。
+- DEP-MEMCACHE-001/002 在 4K 基页下仅判已安装；64K 基页下叠加 `>=1.3.1` 门限（vllm-ascend 0.30.0 内置 1.3.0 在 64K 页下不可用）。
 - Docker 公共依赖检查设备、`npu-smi`、Davinci 设备、驱动目录，以及 `/etc/hccn.conf` 或可执行 `hccn_tool` 至少一个入口。
 
 ### A3 节点内互联

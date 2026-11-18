@@ -13,6 +13,7 @@
 | `subprocess.run(["npu-smi",...])` | PATH 前置假 `npu-smi` 脚本，读档位数据 | ✓ |
 | `subprocess.run(["hccn_tool",...])` | PATH 前置假 `hccn_tool` 脚本 | ✓ |
 | `subprocess.run(["uname","-r"])` | PATH 前置假 `uname` 脚本 | ✓ |
+| `subprocess.run(["getconf","PAGESIZE"])` | PATH 前置假 `getconf` 脚本，读档位 `pagesize.txt` | ✓ |
 | `subprocess.run([sys.executable, "mem_scan.py", ...])` | **提供伪造内核接口依赖**：bind-mount `/proc/kpageflags` + sysfs NUMA，原版 mem_scan.py 真实运行 | ✓ |
 | `subprocess.Popen([sys.executable, "hccs_test_a3.py", ...])` | **提供伪造模块依赖**：`PYTHONPATH` 前置假 `torch`/`torch_npu`/`torch.distributed`，原版 hccs_test_a3.py 真实运行 | ✓ |
 | `shutil.which("npu-smi"/"hccn_tool")` | 假脚本在 PATH 上，which 命中 | ✓ |
@@ -45,15 +46,23 @@
 ## 档位
 
 ### A2（缺省）
-Atlas A2（910B4 ×2，单 die）+ 麒麟 V10 + **4.19 内核** + 64K 基页 + 2MB 静态大页。
-覆盖全部 A2 适用规则：MEM/CANN/HDK/ROCE×2/DOCKER/DEP-MEMCACHE×2，**8 条全 PASS**。
+Atlas A2（910B4 ×2，单 die）+ 麒麟 V10 + **4.19 内核** + 4K 基页 + 2MB 静态大页。
+覆盖全部 A2 适用规则：MEM/CANN/HDK/ROCE×2/DOCKER/DEP-VLLM-ASCEND/DEP-MEMCACHE×2，**9 条全 PASS**。
 
 ### A3
-Atlas A3（Ascend910 ×2，每卡 2 die）+ openEuler + **6.6 内核**。
-覆盖 A3 适用规则：MEM/CANN/HDK/KERNEL/HCCS×2/DOCKER/DEP-MEMCACHE×2。
-- **单节点 hccs**：8 条全 PASS（KERNEL/LINGQU 不适用）。
-- **多节点 hccs**：9 PASS + 1 MANUAL_REQUIRED（LINGQU-001 需人工确认 1520 交换机版本，
+Atlas A3（Ascend910 ×2，每卡 2 die）+ openEuler + **6.6 内核** + 4K 基页。
+覆盖 A3 适用规则：MEM/CANN/HDK/KERNEL/HCCS×2/DOCKER/DEP-VLLM-ASCEND/DEP-MEMCACHE×2。
+- **单节点 hccs**：9 条全 PASS（KERNEL/LINGQU 不适用）。
+- **多节点 hccs**：10 PASS + 1 MANUAL_REQUIRED（LINGQU-001 需人工确认 1520 交换机版本，
   属设计预期，无法自动检测）。
+
+### A2-64K / A3-64K（64K 基页场景）
+Atlas A2/A3 + 麒麟 V10 + **4.19 内核** + **64K 基页** + HCCS/RoCE。
+验证 64K 基页条件门限：HDK>=26.1.0（memcache）、memcache/memfabric>=1.3.1、vllm-ascend>=0.30.0；
+KERNEL-001 在 64K 基页下返回 NOT_APPLICABLE（经验证不依赖 kernel>=6.6.0）。
+- **A2-64K 单节点 RoCE**：9 条全 PASS。
+- **A3-64K 单节点 HCCS**：9 条全 PASS（KERNEL/LINGQU 不适用）。
+- **A3-64K 多节点 HCCS**：9 PASS + 1 MANUAL_REQUIRED（KERNEL 64K 豁免 + LINGQU 人工确认）。
 
 > A3 动态规则（HCCS-002 HCCL all_to_all、ROCE-002 hccn_tool ping）在 stub 内由原版
 > artifacts 脚本 + 伪造依赖真实执行，使规则 PASS；但底层 tensor/通信是假实现，
@@ -93,6 +102,22 @@ docker run --rm \
     kvpool-envcheck-stub \
     python3 kvpool_envcheck.py --hardware A3 --backend memcache \
       --managed-memory-mb 32768 --deployment-mode multi-node --link-type hccs
+
+# A3-64K 单节点 HCCS（64K 基页）— 9 条全 PASS
+docker run --rm \
+    --cap-add SYS_ADMIN --security-opt apparmor=unconfined \
+    -e STUB_PROFILE=a3-64k \
+    kvpool-envcheck-stub \
+    python3 kvpool_envcheck.py --hardware A3 --backend memcache \
+      --managed-memory-mb 32768 --deployment-mode single-node --link-type hccs
+
+# A2-64K 单节点 RoCE（64K 基页）— 9 条全 PASS
+docker run --rm \
+    --cap-add SYS_ADMIN --security-opt apparmor=unconfined \
+    -e STUB_PROFILE=a2-64k \
+    kvpool-envcheck-stub \
+    python3 kvpool_envcheck.py --hardware A2 --backend memcache \
+      --managed-memory-mb 32768 --deployment-mode single-node --link-type roce
 
 # 落盘结果到主机（--output-dir + 卷挂载）
 mkdir -p results
@@ -142,6 +167,7 @@ A2/A3 的数据结构，在 `main()` 里调用 `write_profile()` 生成新档位
 - `stub/bin/npu-smi` — 假 npu-smi（读档位数据）
 - `stub/bin/hccn_tool` — 假 hccn_tool
 - `stub/bin/uname` — 假 uname（仅拦截 -r）
+- `stub/bin/getconf` — 假 getconf（仅拦截 PAGESIZE，读档位 pagesize.txt）
 - `stub/fake_modules/torch/` — 假 torch（含 distributed/multiprocessing，让原版 hccs_test_a3.py 真实运行）
 - `stub/fake_modules/torch_npu/` — 假 torch_npu（空模块，仅满足 import）
 - `stub/smoke_test.sh` — 端到端 smoke：构建镜像并断言三场景的 PASS/MANUAL 计数
@@ -149,10 +175,13 @@ A2/A3 的数据结构，在 `main()` 里调用 `write_profile()` 生成新档位
 
 ## 验证结果
 
-- A2 单节点/多节点 RoCE：`PASS`，退出码 `0`，8 条全 PASS。
-- A3 单节点 HCCS：`PASS`，退出码 `0`，8 条全 PASS。
-- A3 多节点 HCCS：9 PASS + 1 MANUAL_REQUIRED（LINGQU-001 设计预期），退出码 `20`。
+- A2 单节点 RoCE（4K）：`PASS`，退出码 `0`，9 条全 PASS。
+- A3 单节点 HCCS（4K）：`PASS`，退出码 `0`，9 条全 PASS。
+- A3 多节点 HCCS（4K）：10 PASS + 1 MANUAL_REQUIRED（LINGQU-001 设计预期），退出码 `20`。
+- A2-64K 单节点 RoCE：`PASS`，退出码 `0`，9 条全 PASS。
+- A3-64K 单节点 HCCS：`PASS`，退出码 `0`，9 条全 PASS。
+- A3-64K 多节点 HCCS：9 PASS + 1 MANUAL_REQUIRED（KERNEL-001 64K 豁免 + LINGQU-001 设计预期），退出码 `20`。
 - artifacts 源文件 sha256 与 `manifest.json` 一致（`mem_scan.py`=`7eeffc19...`，
   `hccs_test_a3.py`=`9c2f067a...`），原脚本未被修改、真实运行。
-- 镜像内 `python3 -m unittest tests.test_kvpool_envcheck`：49 项全通过
+- 镜像内 `python3 -m unittest tests.test_kvpool_envcheck`：63 项全通过
   （entrypoint 仅在执行检查器前生效，单测不受影响）。
