@@ -158,6 +158,28 @@ IMAGE=myimg bash stub/smoke_test.sh   # 用指定镜像名
 A2/A3 的数据结构，在 `main()` 里调用 `write_profile()` 生成新档位目录，
 然后用 `-e STUB_PROFILE=<name>` 运行。
 
+## 可配置打桩选项
+
+以下两个环境变量控制 `uname -r` 和 `getconf PAGESIZE` 是否打桩。缺省均为打桩
+（读档位数据），设为 `1` 时回退宿主真实值。其余打桩项暂无可配置选项。
+
+| 环境变量 | 缺省 | 设为 `1` 时 | 说明 |
+|---|---|---|---|
+| `STUB_REAL_UNAME` | `0`（打桩） | 用真实 `uname -r` | 内核版本取容器宿主真实值，KERNEL-001 规则行为随宿主内核变化 |
+| `STUB_REAL_PAGESIZE` | `0`（打桩） | 用真实 `getconf PAGESIZE` | 基页大小取宿主真实值（x86 恒 4K），64K 档位场景不适用 |
+
+```bash
+# 使用真实内核版本与真实页大小（不打桩 uname / getconf）
+docker run --rm \
+    --cap-add SYS_ADMIN --security-opt apparmor=unconfined \
+    -e STUB_PROFILE=a3 \
+    -e STUB_REAL_UNAME=1 \
+    -e STUB_REAL_PAGESIZE=1 \
+    kvpool-envcheck-stub \
+    python3 kvpool_envcheck.py --hardware A3 --backend memcache \
+      --managed-memory-mb 32768 --deployment-mode single-node --link-type hccs
+```
+
 ## 文件
 
 - `stub/Dockerfile` — 仿真容器（python:3.12-slim，多架构）
